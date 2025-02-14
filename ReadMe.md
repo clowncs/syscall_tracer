@@ -3,8 +3,6 @@
 Syscall tracer for IDA
 
 ## Features
-- Currently support for windows (static)
-
+- Currently support for windows (static, dynamic)
 ## TODO
-- Support windows (dynamic)
 - Support linux (static, dynamic)

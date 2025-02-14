@@ -3,13 +3,15 @@ import pefile
 import idautils
 import idc
 import idaapi
-
+import ida_dbg
 
 NT = "nt-per-system.json"
 WIN32K = "win32k-per-system.json"
 WIN_X64_PATH = "database/windows/x64/"
 WIN_X86_PATH = "database/windows/x86/"
 MACHINE_TYPES = "database/windows/machine_types/machine_types.json"
+SYSCALL_JSON_STATIC = {}
+SYSCALL_JSON_DYNAMIC = {}
 
 def load_json(name):
     file = open(name, "r")
@@ -47,18 +49,28 @@ def syscall_retrieve(file_path):
         WIN32K_SYSCALLS = load_json(PATH + WIN32K)
     return NT_SYSCALLS, WIN32K_SYSCALLS
 
-def print_syscall_info(EAX_VALUE, head, syscalls_data):
+
+def get_syscall_info(EAX_VALUE, head, syscalls_data, SYSCALL_JSON):
     for windows_version, sp_versions in syscalls_data.items():
         for sp_version, syscalls in sp_versions.items():
             for syscall_name, value in syscalls.items():
                 if value == EAX_VALUE:
-                    print(f"[+] {head:08X} Windows Version: {windows_version} {sp_version} - "
-                          f"syscall: {syscall_name}, {hex(EAX_VALUE)}")
+                    if windows_version not in SYSCALL_JSON:
+                        SYSCALL_JSON[windows_version] = {}
+                    if sp_version not in SYSCALL_JSON[windows_version]:
+                        SYSCALL_JSON[windows_version][sp_version] = []
+                    syscall_info = {
+                        "address": f"{head:08X}",
+                        "syscall": syscall_name,
+                        "EAX": hex(EAX_VALUE)
+                    }
+                    SYSCALL_JSON[windows_version][sp_version].append(syscall_info)
+    
 
 
 def syscall_tracer_static(NT_SYSCALLS, WIN32K_SYSCALLS):
     EAX_VALUE = None
-    breakpoint_list = []    
+    breakpoint_list = [] 
     for seg in idautils.Segments():
         for head in idautils.Heads(seg, idc.get_segm_end(seg)):
             if idc.is_code(idc.get_full_flags(head)):
@@ -85,27 +97,47 @@ def syscall_tracer_static(NT_SYSCALLS, WIN32K_SYSCALLS):
                 if "syscall" in disasm_line:    
                     if EAX_VALUE is None:
                         print(f"[-] {head:08X} Error: EAX value can't find with static")
-                        breakpoint_list.append(head)
                     
-                    print_syscall_info(EAX_VALUE, head, NT_SYSCALLS)
-                    print_syscall_info(EAX_VALUE, head, WIN32K_SYSCALLS)
+                    get_syscall_info(EAX_VALUE, head, NT_SYSCALLS, SYSCALL_JSON_STATIC)
+                    get_syscall_info(EAX_VALUE, head, WIN32K_SYSCALLS, SYSCALL_JSON_STATIC)
+                    breakpoint_list.append(head)
                     EAX_VALUE = None
 
     return breakpoint_list
 
+def syscall_tracer_dynamic(break_list, NT_SYSCALLS, WIN32K_SYSCALLS):
+    
+    for addr in break_list:
+        idc.add_bpt(addr)
+        idc.enable_bpt(addr, True)
 
-def syscall_tracer_dynamic(breakpoint_list):
-    return
+    while True:
+        ea = idaapi.get_screen_ea() 
+        disasm = idc.GetDisasm(ea)
+
+        if disasm.startswith("syscall"):
+            RAX = ida_dbg.get_reg_value("RAX")
+            RIP = ida_dbg.get_reg_value("RIP")
+
+            get_syscall_info(RAX, RIP, NT_SYSCALLS, SYSCALL_JSON_DYNAMIC)
+            get_syscall_info(RAX, RIP, WIN32K_SYSCALLS, SYSCALL_JSON_DYNAMIC)
+
+            ida_dbg.continue_process()
+            ida_dbg.wait_for_next_event(WFNE_SUSP, -1)
+
+
 
 def main():
     NT_SYSCALLS, WIN32K_SYSCALLS = syscall_retrieve("test_bin/dist-20348.exe")
     break_list = syscall_tracer_static(NT_SYSCALLS, WIN32K_SYSCALLS)
     if break_list != []:
-        print(break_list)
-        syscall_tracer_dynamic(break_list)
-    
-    print("[+] Done")
+        syscall_tracer_dynamic(break_list, NT_SYSCALLS, WIN32K_SYSCALLS)
 
+    with open('syscall_info_static.json', 'w') as f:
+        json.dump(SYSCALL_JSON_STATIC, f, indent=4)
+    with open('syscall_info_dynamic.json', 'w') as f:
+        json.dump(SYSCALL_JSON_DYNAMIC, f, indent=4)
+    print("[+] Done")
 
 if __name__ == "__main__":
     main()
